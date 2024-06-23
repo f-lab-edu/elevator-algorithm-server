@@ -1,5 +1,5 @@
 import os
-from enum import Enum
+from enum import IntEnum
 from time import sleep
 from typing import NamedTuple
 
@@ -9,11 +9,17 @@ Floor = int
 
 class RegisteredFloorRequest(NamedTuple):
     step: int
-    floor: int
+    current_floor: int
+    target_floor: int
 
 
 
-class ElevatorStatus(Enum):
+class ElevatorMomentumStatus(IntEnum):
+    DOWN = 0
+    UP = 1
+
+
+class ElevatorStatus(IntEnum):
     DOWN = 0
     UP = 1
     STOP = 2
@@ -33,7 +39,7 @@ class Elevator():
         self.max_floor: int = 10
         self.min_floor: int = 1
         self.watch_list: int = 0
-        self.momentum: ElevatorStatus = 0
+        self.momentum: ElevatorMomentumStatus = ElevatorMomentumStatus.UP
 
     def get_symbol_from_status(self) -> str:
         return {
@@ -43,32 +49,39 @@ class Elevator():
         }[self.status]
 
     def update_watch_list(self) -> None:
-        while (
-            self.registered_floor_requests and
-            self.registered_floor_requests[0].step <= self.step
-        ):
-            self.watch_list |= 1 << (self.registered_floor_requests[0].floor - 1)
-            self.registered_floor_requests.pop(0)
+        nq = []
+        for floor_request in self.registered_floor_requests:
+            request_going_up = floor_request.target_floor - floor_request.current_floor > 0
+            is_going_up = self.momentum == ElevatorMomentumStatus.UP
+            is_matched_going_direction = request_going_up is is_going_up
+
+            if (not is_matched_going_direction or self.step < floor_request.step) and self.watch_list:
+                nq.append(floor_request)
+                continue
+
+            self.watch_list |= 1 << (floor_request.current_floor - 1)
+            self.watch_list |= 1 << (floor_request.target_floor - 1)
+                
+        self.registered_floor_requests = nq
 
     def update_status(self) -> ElevatorStatus:
         current_floor_bitwise = 1 << (self.floor - 1)
-        if self.status != ElevatorStatus.STOP: self.momentum = self.status
         next_status = self.status
         if self.watch_list:
+            condition_watch_list_bitwise = ((1 << self.floor) - 1) & self.watch_list
+            print(f"{condition_watch_list_bitwise=:>10b}")
+            if self.momentum == ElevatorStatus.DOWN:
+                if condition_watch_list_bitwise > 0 and condition_watch_list_bitwise < current_floor_bitwise: next_status = ElevatorStatus.DOWN
+                else: next_status = ElevatorStatus.UP
+            else:
+                if self.watch_list > current_floor_bitwise: next_status = ElevatorStatus.UP
+                else: next_status = ElevatorStatus.DOWN
+            self.momentum = next_status
+
             if self.watch_list & current_floor_bitwise > 0:
                 next_status = ElevatorStatus.STOP
-            else:
-                condition_watch_list_bitwise = ((1 << self.floor) - 1) & self.watch_list
-                print(f"{condition_watch_list_bitwise=:>10b}")
-                if self.momentum == ElevatorStatus.DOWN:
-                    if condition_watch_list_bitwise > 0 and condition_watch_list_bitwise < current_floor_bitwise: next_status = ElevatorStatus.DOWN
-                    else: next_status = ElevatorStatus.UP
-                else:
-                    if self.watch_list > current_floor_bitwise: next_status = ElevatorStatus.UP
-                    else: next_status = ElevatorStatus.DOWN
 
         self.watch_list -= (self.watch_list & current_floor_bitwise)
-
         if self.status != next_status:
             return ElevatorStatus.STOP if self.status != ElevatorStatus.STOP else next_status
 
@@ -82,9 +95,12 @@ class Elevator():
         return self.floor
 
     def update(self) -> None:
+        previous_status = self.status
         self.update_watch_list()
         self.status = self.update_status()
-        self.floor = self.update_floor()
+        if self.status != ElevatorStatus.STOP: self.momentum = self.status
+        if previous_status == self.status:
+            self.floor = self.update_floor()
         self.step += 1
 
     def print_elavator(self, evalator_current_floor: int = 0) -> None:
@@ -99,8 +115,8 @@ def parse_input() -> list[RegisteredFloorRequest]:
     with open("./input.txt", "r", encoding="utf8") as f:
         lines = f.readlines()
         for line in lines:
-            step, floor = line.split(" ")
-            registered_floor_requests.append(RegisteredFloorRequest(int(step), int(floor)))
+            step, current_floor, target_floor = line.split(" ")
+            registered_floor_requests.append(RegisteredFloorRequest(int(step), int(current_floor), int(target_floor)))
     return registered_floor_requests
 
 
@@ -114,9 +130,10 @@ def main() -> None:
         print(f"{elevator.momentum=}")
         print(f"{elevator.watch_list=:>10b}")
         print(f"{elevator.status=}")
+        print(f"{elevator.registered_floor_requests=}")
         print("===")
         elevator.print_elavator(elevator.floor)
-        sleep(0.1)
+        sleep(0.3)
 
 
 if __name__ == "__main__":
