@@ -13,7 +13,6 @@ class RegisteredFloorRequest(NamedTuple):
     target_floor: int
 
 
-
 class ElevatorMomentumStatus(IntEnum):
     DOWN = 0
     UP = 1
