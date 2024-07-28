@@ -1,2 +1,2 @@
-<h1 align="center">Elevator Algorithm</h1>
-<p align="center">A quick start for pair programming using Python</p>
+<h1 align="center">Elevator Algorithm Server</h1>
+<p align="center">Server-side | A quick start for pair programming using Python</p>
