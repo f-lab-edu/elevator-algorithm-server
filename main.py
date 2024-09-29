@@ -1,10 +1,17 @@
 import asyncio
-from websockets.asyncio.server import serve
+import logging
 from enum import IntEnum
-from typing import NamedTuple
+from typing import Iterator, NamedTuple, Optional
+
+from websockets.asyncio.server import serve
 
 Step = int
 Floor = int
+
+
+logger = logging.getLogger(__name__)
+logger.addHandler(logging.StreamHandler())
+logger.setLevel(logging.INFO)
 
 
 class RegisteredFloorRequest(NamedTuple):
@@ -27,9 +34,11 @@ class ElevatorStatus(IntEnum):
 class Elevator():
     def __init__(
         self,
+        id_: str,
         status=ElevatorStatus.STOP,
         floor=1,
     ):
+        self.id = id_
         self.step = 1
         self.status: ElevatorStatus = status
         self.floor: int = floor
@@ -113,20 +122,23 @@ class Elevator():
             evalator_current_symbol = evalator_symbol if floor == evalator_current_floor else ""
             print(f"{floor: >2}F | {evalator_current_symbol}")
 
-async def consumer_handler(ws, elevator: Elevator) -> None:
-    while True:
-        message = await ws.recv()
-        name, type_, floor = message.split(":")
 
-        print(name, type_, floor)
-        elevator.register_request(int(floor))
+class ElevatorManager():
+    def __init__(self):
+        self.elevators: dict[Elevator] = {}
+    
+    def add(self, elevator: Elevator) -> None:
+        self.elevators[elevator.id] = elevator
+    
+    def get(self, name: str) -> Optional[Elevator]:
+        return self.elevators.get(name)
 
-async def producer_handler(ws: str, elevator: Elevator) -> None:    
-    # TODO: change to asyncio generator
-    while True:
-        while elevator.watch_list:
+    def update(self) -> Iterator[Elevator]:
+        for elevator in self.elevators.values():
+            if not elevator.watch_list: continue
+
             elevator.update()
-            id_ = "ELEVATOR0"
+
             print(f"{elevator.step=}")
             print(f"{elevator.floor=}")
             print(f"{elevator.momentum=}")
@@ -134,22 +146,62 @@ async def producer_handler(ws: str, elevator: Elevator) -> None:
             print(f"{elevator.status=}")
             print("===")
             elevator.print_elavator(elevator.floor)
+            
+            yield elevator
 
-            await ws.send("STEP:" + id_ + ":" + str(elevator.step))
-            await ws.send("FLOOR:" + id_ + ":" + str(elevator.floor))
-            await ws.send("MOMENTUM:" + id_ + ":" + str(elevator.momentum))
-            await ws.send("WATCH_LIST:" + id_ + ":" + str(elevator.watch_list))
-            await ws.send("STATUS:" + id_ + ":" + str(elevator.status))
 
-            await asyncio.sleep(1)
+class TransportManager():
+    def __init__(self, ws):
+        self.ws = ws
+        self.logger = logger
+        self.logger.info("SESSION ESTABLISHED!")
+
+
+    def _process_request(self, message: str) -> tuple[str, str, str]:
+        name, type_, floor = message.split(":")
+        return name, type_, floor
+
+    async def recv(self) -> tuple[str, str, str]:
+        message = await self.ws.recv()
+        self.logger.info("RECV: " + message)
+        return self._process_request(message=message)
+    
+    async def send(self, message: str) -> None:
+        self.logger.info("SEND: " + message)
+        await self.ws.send(message)
+
+
+async def consumer_handler(transport_manager: TransportManager, elevator_manager: ElevatorManager) -> None:
+    async for message in transport_manager.ws:
+        name, type_, floor = message.split(":") #await transport_manager.recv()
+        elevator = elevator_manager.get(name)
+        elevator.register_request(int(floor))
+    transport_manager.logger.info("SESSION ENDS")
+
+
+async def producer_handler(transport_manager: TransportManager, elevator_manager: ElevatorManager) -> None:
+    # TODO: change to asyncio generator
+    while True:
+        is_idle = True
+        for elevator in elevator_manager.update():
+            is_idle = False
+            await transport_manager.send("STEP:" + elevator.id + ":" + str(elevator.step))
+            await transport_manager.send("FLOOR:" + elevator.id + ":" + str(elevator.floor))
+            await transport_manager.send("MOMENTUM:" + elevator.id + ":" + str(elevator.momentum))
+            await transport_manager.send("WATCH_LIST:" + elevator.id + ":" + str(elevator.watch_list))
+            await transport_manager.send("STATUS:" + elevator.id + ":" + str(elevator.status))
+        if not is_idle: await asyncio.sleep(1)
         await asyncio.sleep(0.1)
 
 
-
 async def handler(ws: str) -> None:
-    elevator = Elevator()
-    consumer_task = asyncio.ensure_future(consumer_handler(ws, elevator))
-    producer_task = asyncio.ensure_future(producer_handler(ws, elevator))
+    elevator_manager = ElevatorManager()
+    elevator_manager.add(Elevator("ELEVATOR1"))
+    elevator_manager.add(Elevator("ELEVATOR2"))
+    transport_manager = TransportManager(ws=ws)
+
+    consumer_task = asyncio.ensure_future(consumer_handler(transport_manager, elevator_manager))
+    producer_task = asyncio.ensure_future(producer_handler(transport_manager, elevator_manager))
 
     done, pending = await asyncio.wait(
         [consumer_task, producer_task],
@@ -159,9 +211,12 @@ async def handler(ws: str) -> None:
     for task in pending:
         task.cancel()
 
+    print(pending)
+    print("SESSION CLEAR!")
+
 
 async def main() -> None:
-    async with serve(handler, "127.0.0.1", 5678):
+    async with serve(handler, "0.0.0.0", 5678):
         await asyncio.get_running_loop().create_future()
 
 
